@@ -31,21 +31,6 @@ RUN apt-get update && apt-get install -y \
     screen \
     && rm -rf /var/lib/apt/lists/*
 
-# Install essential Python packages
-RUN pip3 install --no-cache-dir \
-    # Core libraries
-    requests \
-    aiohttp \
-    # Web scraping
-    beautifulsoup4 \
-    # Data formats
-    pyyaml \
-    # Utilities
-    python-dotenv \
-    rich \
-    # MCP support
-    mcp
-
 # Install essential Node.js packages globally
 RUN npm install -g \
     typescript \
