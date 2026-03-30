@@ -25,45 +25,22 @@ interface Env {
   // Sandbox Durable Object binding
   Sandbox: DurableObjectNamespace<Sandbox>;
   
-  // API keys for AI providers
-  ANTHROPIC_API_KEY?: string;
-  OPENAI_API_KEY?: string;
+  // Cloudflare AI Gateway (unified billing - required)
+  CLOUDFLARE_ACCOUNT_ID: string;
+  CLOUDFLARE_GATEWAY_ID: string;
+  CLOUDFLARE_API_TOKEN: string;
   
-  // Optional: Cloudflare AI Gateway for unified billing
-  CLOUDFLARE_ACCOUNT_ID?: string;
-  CLOUDFLARE_GATEWAY_ID?: string;
-  CLOUDFLARE_API_TOKEN?: string;
+  // Telegram Bot (optional)
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
 }
 
 /**
- * Configure OpenCode with AI providers
- * 
- * Option A: Direct provider integration (requires provider API keys)
- * Option B: Cloudflare AI Gateway (unified billing, no provider keys needed)
+ * Configure OpenCode with Cloudflare AI Gateway
+ * Uses unified billing - no provider API keys needed!
  */
 const getConfig = (env: Env): Config => ({
   provider: {
-    // Direct Anthropic provider
-    ...(env.ANTHROPIC_API_KEY && {
-      anthropic: {
-        options: {
-          apiKey: env.ANTHROPIC_API_KEY,
-        },
-      },
-    }),
-    
-    // Direct OpenAI provider
-    ...(env.OPENAI_API_KEY && {
-      openai: {
-        options: {
-          apiKey: env.OPENAI_API_KEY,
-        },
-      },
-    }),
-    
-    // Cloudflare AI Gateway with unified billing
-    // Uncomment and configure to use AI Gateway instead of direct providers
-    /*
     'cloudflare-ai-gateway': {
       options: {
         accountId: env.CLOUDFLARE_ACCOUNT_ID,
@@ -73,11 +50,11 @@ const getConfig = (env: Env): Config => ({
       models: {
         'anthropic/claude-sonnet-4-5': {},
         'anthropic/claude-opus-4-6': {},
+        'anthropic/claude-sonnet-3-5-20241022': {},
         'openai/gpt-4o': {},
         'openai/o1': {},
       },
     },
-    */
   },
 });
 
@@ -96,15 +73,25 @@ export default {
     try {
       // Route 1: Health check endpoint
       if (url.pathname === '/health') {
-        return handleHealth(sandbox);
+        return handleHealth(sandbox, env);
       }
       
-      // Route 2: Programmatic API for automation
+      // Route 2: Telegram webhook
+      if (url.pathname === '/telegram/webhook' && env.TELEGRAM_BOT_TOKEN) {
+        return handleTelegramWebhook(request, env);
+      }
+      
+      // Route 3: Telegram setup
+      if (url.pathname === '/telegram/setup' && env.TELEGRAM_BOT_TOKEN) {
+        return handleTelegramSetup(request, env);
+      }
+      
+      // Route 4: Programmatic API for automation
       if (url.pathname.startsWith('/api/')) {
         return handleApi(request, sandbox, env);
       }
       
-      // Route 3: WebSocket upgrade for terminal (handled by OpenCode)
+      // Route 5: WebSocket upgrade for terminal (handled by OpenCode)
       if (request.headers.get('Upgrade') === 'websocket') {
         const server = await createOpencodeServer(sandbox, {
           directory: '/home/user/workspace',
@@ -113,7 +100,7 @@ export default {
         return proxyToOpencode(request, sandbox, server);
       }
       
-      // Route 4: Default - Web UI (proxied from OpenCode)
+      // Route 6: Default - Web UI (proxied from OpenCode)
       const server = await createOpencodeServer(sandbox, {
         directory: '/home/user/workspace',
         config: getConfig(env),
@@ -123,9 +110,6 @@ export default {
           ...(request.headers.has('traceparent') && {
             TRACEPARENT: request.headers.get('traceparent')!,
           }),
-          // Optional: Configure OpenTelemetry
-          // OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
-          // OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
         },
       });
       
@@ -166,7 +150,8 @@ function getUserId(request: Request): string {
  * Health check endpoint
  */
 async function handleHealth(
-  sandbox: ReturnType<typeof getSandbox>
+  sandbox: ReturnType<typeof getSandbox>,
+  env: Env
 ): Promise<Response> {
   try {
     // Verify sandbox is responsive
@@ -175,6 +160,8 @@ async function handleHealth(
     return Response.json({
       status: 'healthy',
       opencode_version: result.stdout.trim(),
+      ai_gateway: 'enabled',
+      telegram_bot: env.TELEGRAM_BOT_TOKEN ? 'configured' : 'not_configured',
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -383,5 +370,257 @@ async function handleRunCode(
       },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * Telegram Bot Integration
+ */
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    from: {
+      id: number;
+      username?: string;
+      first_name: string;
+    };
+    chat: {
+      id: number;
+      type: string;
+    };
+    text?: string;
+  };
+}
+
+/**
+ * Handle Telegram webhook
+ */
+async function handleTelegramWebhook(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    // Verify webhook secret if configured
+    if (env.TELEGRAM_WEBHOOK_SECRET) {
+      const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+      if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+    }
+
+    const update: TelegramUpdate = await request.json();
+    
+    if (!update.message?.text || !update.message?.from) {
+      return Response.json({ ok: true });
+    }
+
+    const { message } = update;
+    const userId = `telegram:${message.from.id}`;
+    const userMessage = message.text;
+
+    // Handle /start command
+    if (userMessage === '/start') {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN!,
+        message.chat.id,
+        `👋 Hi ${message.from.first_name}!\n\n` +
+          `I'm your OpenCode AI coding agent powered by Cloudflare.\n\n` +
+          `Send me any coding question or task and I'll help you:\n` +
+          `• Write code in any language\n` +
+          `• Debug and fix issues\n` +
+          `• Explain concepts\n` +
+          `• Review and refactor code\n\n` +
+          `Try asking me something!`
+      );
+      return Response.json({ ok: true });
+    }
+
+    // Handle /help command
+    if (userMessage === '/help') {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN!,
+        message.chat.id,
+        `🤖 *OpenCode Agent Commands*\n\n` +
+          `/start - Start the bot\n` +
+          `/help - Show this help\n` +
+          `/new - Start a new session\n\n` +
+          `Just send me your coding questions and I'll help you!`,
+        { parse_mode: 'Markdown' }
+      );
+      return Response.json({ ok: true });
+    }
+
+    // Handle /new command (new session)
+    if (userMessage === '/new') {
+      // This will create a new session by using a different sandbox ID
+      const newUserId = `telegram:${message.from.id}:${Date.now()}`;
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN!,
+        message.chat.id,
+        `✨ Started a new coding session! Ask me anything.`
+      );
+      return Response.json({ ok: true });
+    }
+
+    // Send "typing" status
+    await fetch(
+      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: message.chat.id,
+          action: 'typing',
+        }),
+      }
+    );
+
+    // Get sandbox for this user
+    const sandbox = getSandbox(env.Sandbox, userId);
+
+    // Get OpenCode client
+    const { client } = await createOpencode<OpencodeClient>(sandbox, {
+      directory: '/home/user/workspace',
+      config: getConfig(env),
+    });
+
+    // Create or get session
+    const sessions = await client.session.list();
+    let sessionId: string;
+
+    if (sessions.data && sessions.data.length > 0) {
+      sessionId = sessions.data[0].id;
+    } else {
+      const session = await client.session.create({
+        title: `Telegram: ${message.from.username || message.from.first_name}`,
+        directory: '/home/user/workspace',
+      });
+
+      if (!session.data) {
+        throw new Error('Failed to create session');
+      }
+
+      sessionId = session.data.id;
+    }
+
+    // Send prompt to OpenCode
+    const result = await client.session.prompt({
+      sessionID: sessionId,
+      directory: '/home/user/workspace',
+      parts: [{ type: 'text', text: userMessage }],
+      model: {
+        providerID: 'cloudflare-ai-gateway',
+        modelID: 'anthropic/claude-sonnet-4-5',
+      },
+    });
+
+    // Extract response
+    const parts = result.data?.parts ?? [];
+    const textPart = parts.find(
+      (part): part is Part & { type: 'text'; text: string } =>
+        part.type === 'text' && typeof part.text === 'string'
+    );
+
+    const response = textPart?.text ?? 'Sorry, I could not generate a response.';
+
+    // Send response to Telegram (split if too long)
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN!, message.chat.id, response);
+
+    return Response.json({ ok: true });
+  } catch (error) {
+    console.error('Telegram webhook error:', error);
+    return Response.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Setup Telegram webhook
+ */
+async function handleTelegramSetup(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const webhookUrl = `${url.origin}/telegram/webhook`;
+
+    const response = await fetch(
+      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: webhookUrl,
+          secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+          allowed_updates: ['message'],
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    return Response.json({
+      success: true,
+      webhook_url: webhookUrl,
+      telegram_response: data,
+    });
+  } catch (error) {
+    console.error('Telegram setup error:', error);
+    return Response.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Send message to Telegram
+ */
+async function sendTelegramMessage(
+  botToken: string,
+  chatId: number,
+  text: string,
+  options: Record<string, any> = {}
+): Promise<void> {
+  // Telegram max message length is 4096
+  const maxLength = 4096;
+
+  if (text.length <= maxLength) {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...options,
+      }),
+    });
+  } else {
+    // Split long messages
+    const chunks = text.match(new RegExp(`.{1,${maxLength}}`, 'g')) || [];
+    for (const chunk of chunks) {
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: chunk,
+          ...options,
+        }),
+      });
+      // Small delay between messages
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 }
