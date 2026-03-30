@@ -14,6 +14,7 @@ import {
 } from '@cloudflare/sandbox/opencode';
 import type { Config, Part } from '@opencode-ai/sdk/v2';
 import type { OpencodeClient } from '@opencode-ai/sdk/v2/client';
+import { MCP_SERVERS, searchCloudFlareDocs, listMCPTools, callMCPTool } from './mcp';
 
 // Required: Export the Sandbox class for Durable Objects
 export { Sandbox } from '@cloudflare/sandbox';
@@ -86,12 +87,17 @@ export default {
         return handleTelegramSetup(request, env);
       }
       
-      // Route 4: Programmatic API for automation
+      // Route 4: MCP endpoints
+      if (url.pathname.startsWith('/mcp/')) {
+        return handleMCP(request, env);
+      }
+      
+      // Route 5: Programmatic API for automation
       if (url.pathname.startsWith('/api/')) {
         return handleApi(request, sandbox, env);
       }
       
-      // Route 5: WebSocket upgrade for terminal (handled by OpenCode)
+      // Route 6: WebSocket upgrade for terminal (handled by OpenCode)
       if (request.headers.get('Upgrade') === 'websocket') {
         const server = await createOpencodeServer(sandbox, {
           directory: '/home/user/workspace',
@@ -100,7 +106,7 @@ export default {
         return proxyToOpencode(request, sandbox, server);
       }
       
-      // Route 6: Default - Web UI (proxied from OpenCode)
+      // Route 7: Default - Web UI (proxied from OpenCode)
       const server = await createOpencodeServer(sandbox, {
         directory: '/home/user/workspace',
         config: getConfig(env),
@@ -162,6 +168,7 @@ async function handleHealth(
       opencode_version: result.stdout.trim(),
       ai_gateway: 'enabled',
       telegram_bot: env.TELEGRAM_BOT_TOKEN ? 'configured' : 'not_configured',
+      mcp_servers: Object.keys(MCP_SERVERS).length,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -173,6 +180,100 @@ async function handleHealth(
       { status: 500 }
     );
   }
+}
+
+/**
+ * Handle MCP (Model Context Protocol) requests
+ */
+async function handleMCP(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  
+  // List available MCP servers
+  if (request.method === 'GET' && url.pathname === '/mcp/servers') {
+    return Response.json({
+      servers: Object.entries(MCP_SERVERS).map(([id, server]) => ({
+        id,
+        ...server,
+      })),
+    });
+  }
+  
+  // Search Cloudflare documentation
+  if (request.method === 'POST' && url.pathname === '/mcp/docs/search') {
+    try {
+      const body = await request.json<{ query: string }>();
+      const result = await searchCloudFlareDocs(
+        body.query,
+        env.CLOUDFLARE_API_TOKEN
+      );
+      
+      return Response.json({ result });
+    } catch (error) {
+      return Response.json(
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 }
+      );
+    }
+  }
+  
+  // List tools from a specific MCP server
+  if (request.method === 'GET' && url.pathname.startsWith('/mcp/tools/')) {
+    const serverId = url.pathname.split('/').pop();
+    const server = MCP_SERVERS[serverId as keyof typeof MCP_SERVERS];
+    
+    if (!server) {
+      return Response.json({ error: 'Server not found' }, { status: 404 });
+    }
+    
+    try {
+      const tools = await listMCPTools(server, env.CLOUDFLARE_API_TOKEN);
+      return Response.json({ server: server.name, tools });
+    } catch (error) {
+      return Response.json(
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 }
+      );
+    }
+  }
+  
+  // Call a tool on a specific MCP server
+  if (request.method === 'POST' && url.pathname.startsWith('/mcp/call/')) {
+    const serverId = url.pathname.split('/').pop();
+    const server = MCP_SERVERS[serverId as keyof typeof MCP_SERVERS];
+    
+    if (!server) {
+      return Response.json({ error: 'Server not found' }, { status: 404 });
+    }
+    
+    try {
+      const body = await request.json<{
+        tool: string;
+        params: Record<string, any>;
+      }>();
+      
+      const result = await callMCPTool(
+        server,
+        body.tool,
+        body.params,
+        env.CLOUDFLARE_API_TOKEN
+      );
+      
+      return Response.json({ result });
+    } catch (error) {
+      return Response.json(
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 }
+      );
+    }
+  }
+  
+  return Response.json({ error: 'Not found' }, { status: 404 });
 }
 
 /**
@@ -418,7 +519,7 @@ async function handleTelegramWebhook(
 
     const { message } = update;
     const userId = `telegram:${message.from.id}`;
-    const userMessage = message.text;
+    const userMessage = message.text!; // Safe: already checked above
 
     // Handle /start command
     if (userMessage === '/start') {
