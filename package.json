@@ -1,0 +1,26 @@
+{
+  "name": "opencode-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "OpenCode agent running on Cloudflare Workers with Sandbox SDK",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.1.40"
+  },
+  "devDependencies": {
+    "@cloudflare/sandbox": "^0.8.0",
+    "@cloudflare/workers-types": "^4.20250327.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.76.0"
+  },
+  "author": "",
+  "license": "MIT"
+}

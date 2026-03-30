@@ -1,0 +1,54 @@
+/**
+ * Wrangler configuration for OpenCode agent on Cloudflare Workers
+ * Documentation: https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opencode-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  /**
+   * Smart Placement - automatically routes requests to optimal data center
+   * Uncomment to enable:
+   */
+  // "placement": { "mode": "smart" },
+  
+  /**
+   * Container configuration for Sandbox
+   * The Sandbox runs OpenCode in an isolated container
+   */
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 10
+    }
+  ],
+  
+  /**
+   * Durable Objects binding for persistent sandbox instances
+   */
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      }
+    ]
+  },
+  
+  /**
+   * Migrations for Durable Objects
+   */
+  "migrations": [
+    {
+      "new_sqlite_classes": ["Sandbox"],
+      "tag": "v1"
+    }
+  ]
+}
